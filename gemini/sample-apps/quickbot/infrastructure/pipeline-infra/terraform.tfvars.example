@@ -1,0 +1,11 @@
+# infrastructure/pipeline-infra/terraform.tfvars.example
+# Rename this file to terraform.tfvars and fill in your values.
+
+gcp_project_id      = "your-gcp-project-id"
+activate_apis = [
+  "you-api.googleapis.com"
+]
+gcp_region          = "us-central1"
+github_repo_owner   = "your-github-username"
+github_repo_name    = "quickbot-generative-ai"
+branch_name         = "main"

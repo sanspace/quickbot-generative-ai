@@ -1,0 +1,82 @@
+# This is the reusable APP-LEVEL builder config.
+# Place this at `gemini/sample-apps/quickbot/infrastructure/cloudbuild.app.yaml`.
+# It is NOT run by a trigger directly. It is called by the main dispatcher build.
+# Its purpose is to build, push, and deploy a single application.
+
+# All paths here are relative to the repository root.
+steps:
+  # --- BUILD STEPS ---
+  # These can run in parallel.
+
+  # Step 1: Build the backend Docker image.
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'Build Backend Image'
+  args:
+    - 'build'
+    - '--tag=${_GCP_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_NAME}/${_APP_NAME}-backend:$COMMIT_SHA'
+    - '--file=gemini/sample-apps/quickbot/${_APP_PATH}/backend/Dockerfile'
+    - 'gemini/sample-apps/quickbot/${_APP_PATH}/' # The build context is the app's root directory.
+
+  # Step 2: Build the frontend Docker image.
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'Build Frontend Image'
+  args:
+    - 'build'
+    - '--tag=${_GCP_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_NAME}/${_APP_NAME}-frontend:$COMMIT_SHA'
+    - '--file=gemini/sample-apps/quickbot/${_APP_PATH}/frontend/Dockerfile'
+    # This build-arg is often needed for Angular builds to specify the project within angular.json.
+    - '--build-arg=ANGULAR_PROJECT_NAME=${_APP_NAME}'
+    - 'gemini/sample-apps/quickbot/${_APP_PATH}/' # Build context.
+
+  # --- PUSH STEPS ---
+  # These depend on their respective build steps and can run in parallel.
+
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'Push Backend Image'
+  waitFor: ['Build Backend Image']
+  args: ['push', '${_GCP_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_NAME}/${_APP_NAME}-backend:$COMMIT_SHA']
+
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'Push Frontend Image'
+  waitFor: ['Build Frontend Image']
+  args: ['push', '${_GCP_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_NAME}/${_APP_NAME}-frontend:$COMMIT_SHA']
+
+  # --- DEPLOY STEPS ---
+  # These depend on their respective push steps and can run in parallel.
+
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  id: 'Deploy Backend Service'
+  waitFor: ['Push Backend Image']
+  entrypoint: gcloud
+  args:
+    - 'run'
+    - 'deploy'
+    - '${_APP_NAME}-backend' # Cloud Run service name
+    - '--image=${_GCP_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_NAME}/${_APP_NAME}-backend:$COMMIT_SHA'
+    - '--region=${_GCP_REGION}'
+    - '--platform=managed'
+    - '--allow-unauthenticated' # Set to --no-allow-unauthenticated for internal services.
+
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  id: 'Deploy Frontend Service'
+  waitFor: ['Push Frontend Image']
+  entrypoint: gcloud
+  args:
+    - 'run'
+    - 'deploy'
+    - '${_APP_NAME}-frontend' # Cloud Run service name
+    - '--image=${_GCP_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO_NAME}/${_APP_NAME}-frontend:$COMMIT_SHA'
+    - '--region=${_GCP_REGION}'
+    - '--platform=managed'
+    - '--allow-unauthenticated'
+
+# All substitutions for this file are provided by the dispatcher's `gcloud builds submit` command.
+# These are just placeholders for clarity.
+substitutions:
+  _GCP_REGION: 'us-central1'
+  _AR_REPO_NAME: 'quickbot-apps'
+  _APP_NAME: 'default-app'
+  _APP_PATH: '.'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

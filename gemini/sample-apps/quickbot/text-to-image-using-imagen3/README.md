@@ -277,3 +277,4 @@ To maintain code quality and consistency across the project:
     # from backend/ directory
     python -m black . --line-length=80
     ```
+

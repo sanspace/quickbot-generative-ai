@@ -1,0 +1,94 @@
+# This is the DISPATCHER build config.
+# Place this at `gemini/sample-apps/quickbot/infrastructure/cloudbuild.yaml`.
+# Its sole purpose is to find changed apps and trigger individual builds for them.
+
+steps:
+  # This step uses git to find which application directories were changed in the commit.
+  - name: gcr.io/cloud-builders/git
+    id: GitFetch # Changed ID slightly
+    # Fetch only required branch history, depth 2 for diffing parent
+    args: ['fetch', '--depth=2', 'origin', '$BRANCH_NAME']
+  - name: gcr.io/cloud-builders/gcloud
+    id: 'Detect Changed Applications'
+    script: |
+      #!/usr/bin/env bash
+      set -e # Exit immediately if a command fails.
+
+      # Get the list of all files changed in the last commit.
+      # diff-tree is the most reliable way to get this info in Cloud Build's detached HEAD state.
+      git diff --name-only HEAD~1 | xargs dirname | sort | uniq > /workspace/changed_files.txt
+      echo "--- Changed files in this commit ---"
+      cat /workspace/changed_files.txt
+      echo "------------------------------------"
+
+      # From the list of changed files, derive the unique application directory names.
+      # For example, a change in 'gemini/sample-apps/quickbot/mail-summarizer/backend/main.py'
+      # will result in 'mail-summarizer'. We use sed for this transformation.
+      sed -n 's#^gemini/sample-apps/quickbot/\([^/]*\)/.*#\1#p' /workspace/changed_files.txt | sort -u > /workspace/changed_apps.txt
+
+      echo "--- Potential applications with changes ---"
+      if [ ! -s /workspace/changed_apps.txt ]; then
+        echo "No application directories were changed. Exiting."
+        exit 0
+      fi
+      cat /workspace/changed_apps.txt
+      echo "-------------------------------------------"
+
+      # Create a file to hold the list of apps that are valid and need to be built.
+      touch /workspace/apps_to_build.txt
+
+      # Loop through each potentially changed app directory and verify it's a real, buildable app.
+      while read -r app_dir; do
+        # Ignore changes within the infrastructure directory itself.
+        if [ "${app_dir}" = "infrastructure" ]; then
+          echo "INFO: Ignoring changes in the 'infrastructure' directory."
+          continue
+        fi
+
+        # A valid app must have both a frontend and a backend Dockerfile.
+        if [ -f "gemini/sample-apps/quickbot/${app_dir}/backend/Dockerfile" ] && [ -f "gemini/sample-apps/quickbot/${app_dir}/frontend/Dockerfile" ]; then
+          echo "VALID: Found frontend and backend Dockerfiles for '${app_dir}'. Adding to build queue."
+          echo "${app_dir}" >> /workspace/apps_to_build.txt
+        else
+          echo "SKIPPING: '${app_dir}' is not a valid app (missing required Dockerfiles)."
+        fi
+      done < /workspace/changed_apps.txt
+
+  # This step reads the list of validated apps and submits a parallel build for each one.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'Dispatch Builds'
+    script: |
+      #!/usr/bin/env bash
+      set -e
+
+      if [ ! -s /workspace/apps_to_build.txt ]; then
+          echo "No valid applications to build."
+          exit 0
+      fi
+
+      echo "--- Dispatching builds for the following applications ---"
+      cat /workspace/apps_to_build.txt
+      echo "--------------------------------------------------------"
+
+      # Read the validated app names and submit a parallel build for each one using 'gcloud builds submit'.
+      while read -r app_name; do
+          echo "Submitting build for: ${app_name}"
+          ( # Run in a subshell to allow commands to run in parallel.
+            gcloud builds submit . \
+              --config="gemini/sample-apps/quickbot/infrastructure/cloudbuild.app.yaml" \
+              --substitutions="_APP_NAME=${app_name},_APP_PATH=${app_name},_GCP_REGION=${_GCP_REGION},_AR_REPO_NAME=${_AR_REPO_NAME}" \
+              # --gcs-log-dir="gs://${PROJECT_ID}_cloudbuild/logs" \
+              --async
+          ) &
+      done < /workspace/apps_to_build.txt
+      wait # Wait for all parallel sub-builds to be submitted.
+
+# Default substitutions are provided by the trigger.
+# These values are then passed down to the app-level builds.
+substitutions:
+  _GCP_REGION: 'us-central1'
+  _AR_REPO_NAME: 'quickbot-apps'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  
